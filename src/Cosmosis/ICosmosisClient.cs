@@ -33,7 +33,8 @@ public interface ICosmosisClient
         ContainerPath containerPath,
         CosmosDocumentKey documentKey,
         T document,
-        CosmosisCreateOptions? options = null,
+        CosmosisCreateOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull;
 
@@ -51,7 +52,8 @@ public interface ICosmosisClient
         ContainerPath containerPath,
         PartitionKey partitionKey,
         T document,
-        CosmosisUpsertOptions? options = null,
+        CosmosisUpsertOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull;
 
@@ -69,7 +71,8 @@ public interface ICosmosisClient
     Task<ItemResponse<T>> GetOneAsync<T>(
         ContainerPath containerPath,
         CosmosDocumentKey cosmosDocumentKey,
-        CosmosisGetOptions? options = null,
+        CosmosisGetOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull;
 
@@ -98,7 +101,8 @@ public interface ICosmosisClient
         CosmosDocumentKey cosmosDocumentKey,
         Func<T, Task<T>> updateDocumentAsync,
         (T document, string etag)? cached = null,
-        CosmosisUpdateOptions? options = null,
+        CosmosisUpdateOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull;
 
@@ -118,7 +122,8 @@ public interface ICosmosisClient
     Task<ItemResponse<T>?> DeleteAsync<T>(
         ContainerPath containerPath,
         CosmosDocumentKey documentKey,
-        CosmosisDeleteOptions? options = null,
+        CosmosisDeleteOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull;
 
@@ -140,7 +145,8 @@ public interface ICosmosisClient
     Task<ResponseMessage> DeletePartitionAsync(
         ContainerPath containerPath,
         PartitionKey partitionKey,
-        CosmosisDeletePartitionOptions? options = null,
+        CosmosisDeletePartitionOptions? cosmosisOptions = null,
+        RequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     );
 }

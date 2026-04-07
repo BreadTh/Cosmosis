@@ -15,29 +15,30 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
         ContainerPath containerPath,
         CosmosDocumentKey documentKey,
         T document,
-        CosmosisCreateOptions? options = null,
+        CosmosisCreateOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull
     {
-        options ??= new CosmosisCreateOptions();
+        cosmosisOptions ??= new CosmosisCreateOptions();
         var container = GetContainer(containerPath);
         
         // If the first write fails due to networking issues, we may end up in a situation where a retry will fail
         // because the earlier create command arrived at the server, but the response did not come back. But now
         // on retry the response will come back that the document already exists because we just created it.
         // For this reason we must check if the document exists beforehand.
-        // This check can be disabled with options.AssumeDocumentDoesNotExist, to save the roundtrip to get the document
+        // This check can be disabled with cosmosisOptions.AssumeDocumentDoesNotExist, to save the roundtrip to get the document
         // before writing the document, but network issues => retries may then either cause false
         // "document already created" errors or overwrite an existing document, depending on the
-        // options.RetryBehavior selected.
+        // cosmosisOptions.RetryBehavior selected.
         bool documentAlreadyExists;
-        if (options.AssumeDocumentDoesNotExist)
+        if (cosmosisOptions.AssumeDocumentDoesNotExist)
             documentAlreadyExists = false;
         else
         {
             try
             {
-                await GetOneAsync<T>(containerPath, documentKey, options, cancellationToken);
+                await GetOneAsync<T>(containerPath, documentKey, cosmosisOptions, cosmosOptions, cancellationToken);
                 documentAlreadyExists = false;
             }
             catch (CosmosDocumentNotFoundException)
@@ -45,7 +46,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
                 // Inversely, we can save the extra write attempt when the document exists, but then we don't get
                 // a genuine CosmosException as thrown by the Cosmos client, but rather an imitation that may not be
                 // fully accurate.
-                if (options.FakeCosmosExceptionWhenDocumentAlreadyExists)
+                if (cosmosisOptions.FakeCosmosExceptionWhenDocumentAlreadyExists)
                     throw new CosmosDocumentAlreadyExistsException(
                         containerPath,
                         documentKey,
@@ -62,67 +63,72 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
         Func<RetryContext, Task<ItemResponse<T>>> funcAsync;
         if (documentAlreadyExists) // Deliberately call create each time to trigger a real cosmos exception.
             funcAsync = AlwaysCreateAsync;
-        else if (options.RetryBehavior == CosmosisCreateRetryBehavior.Create)
+        else if (cosmosisOptions.RetryBehavior == CosmosisCreateRetryBehavior.Create)
             funcAsync = AlwaysCreateAsync;
         else
             funcAsync = FirstCreateThenUpsertAsync;
 
-        return await RetryAsync(funcAsync, options, containerPath, cancellationToken);
+        return await RetryAsync(funcAsync, cosmosisOptions, containerPath, cancellationToken);
 
         async Task<ItemResponse<T>> FirstCreateThenUpsertAsync(RetryContext context)
         {
             if(context.NetworkFailureCount == 0)
                 return await container.CreateItemAsync(
-                    document, 
-                    documentKey.PartitionKey, 
-                    cancellationToken: cancellationToken
+                    document,
+                    documentKey.PartitionKey,
+                    cosmosOptions,
+                    cancellationToken
                 );
 
             // Upsert avoids false 409s from our own timed-out create that may have committed,
             // but may overwrite a document created by another process in the window since our existence check.
             // Cosmos does not provide guarantees on both network and safety as there's no data locking.
             return await container.UpsertItemAsync(
-                document, 
-                documentKey.PartitionKey, 
-                cancellationToken: cancellationToken
+                document,
+                documentKey.PartitionKey,
+                cosmosOptions,
+                cancellationToken
             );
         }
 
         async Task<ItemResponse<T>> AlwaysCreateAsync(RetryContext context) =>
-            await container.CreateItemAsync(document, documentKey.PartitionKey, cancellationToken: cancellationToken);
+            await container.CreateItemAsync(document, documentKey.PartitionKey, cosmosOptions, cancellationToken);
     }
 
     public async Task<ItemResponse<T>> UpsertAsync<T>(
         ContainerPath containerPath,
         PartitionKey partitionKey,
         T document,
-        CosmosisUpsertOptions? options = null,
+        CosmosisUpsertOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull
     {
-        options ??= new CosmosisUpsertOptions();
+        cosmosisOptions ??= new CosmosisUpsertOptions();
         var container = GetContainer(containerPath);
 
         async Task<ItemResponse<T>> FuncAsync(RetryContext retryContext)
         {
             return await container.UpsertItemAsync(
-                document, 
-                partitionKey, 
-                cancellationToken: retryContext.CancellationToken
+                document,
+                partitionKey,
+                cosmosOptions,
+                retryContext.CancellationToken
             );
         }
 
-        return await RetryAsync(FuncAsync, options, containerPath, cancellationToken);
+        return await RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
     }
 
     public async Task<ItemResponse<T>> GetOneAsync<T>(
         ContainerPath containerPath,
         CosmosDocumentKey cosmosDocumentKey,
-        CosmosisGetOptions? options = null,
+        CosmosisGetOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull
     {
-        options ??= new CosmosisGetOptions();
+        cosmosisOptions ??= new CosmosisGetOptions();
         var container = GetContainer(containerPath);
 
         async Task<ItemResponse<T>> FuncAsync(RetryContext retryContext)
@@ -130,9 +136,10 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
             try
             {
                 return await container.ReadItemAsync<T>(
-                    cosmosDocumentKey.CosmosDocumentId.Value, 
-                    cosmosDocumentKey.PartitionKey, 
-                    cancellationToken: retryContext.CancellationToken
+                    cosmosDocumentKey.CosmosDocumentId.Value,
+                    cosmosDocumentKey.PartitionKey,
+                    cosmosOptions,
+                    retryContext.CancellationToken
                 );
             }
             catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -141,7 +148,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
             }
         }
 
-        return await RetryAsync(FuncAsync, options, containerPath, cancellationToken);
+        return await RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
     }
 
     public async Task<ItemResponse<T>> UpdateAsync<T>(
@@ -149,15 +156,16 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
         CosmosDocumentKey cosmosDocumentKey,
         Func<T, Task<T>> updateDocumentAsync,
         (T document, string etag)? cached = null,
-        CosmosisUpdateOptions? options = null,
+        CosmosisUpdateOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull
     {
-        options ??= new CosmosisUpdateOptions();
-        var maxETagMismatchRetries = options.MaxETagMismatchRetries;
+        cosmosisOptions ??= new CosmosisUpdateOptions();
+        var maxETagMismatchRetries = cosmosisOptions.MaxETagMismatchRetries;
         var container = GetContainer(containerPath);
 
-        return await RetryAsync(FuncAsync, options, containerPath, cancellationToken);
+        return await RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
 
         async Task<ItemResponse<T>> FuncAsync(RetryContext retryContext)
         {
@@ -178,9 +186,10 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
                     try
                     {
                         response = await container.ReadItemAsync<T>(
-                            cosmosDocumentKey.CosmosDocumentId.Value, 
-                            cosmosDocumentKey.PartitionKey, 
-                            cancellationToken: retryContext.CancellationToken
+                            cosmosDocumentKey.CosmosDocumentId.Value,
+                            cosmosDocumentKey.PartitionKey,
+                            cosmosOptions,
+                            retryContext.CancellationToken
                         );
                     }
                     catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -224,31 +233,32 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
     public async Task<ItemResponse<T>?> DeleteAsync<T>(
         ContainerPath containerPath,
         CosmosDocumentKey documentKey,
-        CosmosisDeleteOptions? options = null,
+        CosmosisDeleteOptions? cosmosisOptions = null,
+        ItemRequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) where T : notnull
     {
-        options ??= new CosmosisDeleteOptions();
+        cosmosisOptions ??= new CosmosisDeleteOptions();
         var container = GetContainer(containerPath);
 
-        if (!options.ThrowIfNotFound)
-            return await RetryAsync(DontThrowOnNotFound, options, containerPath, cancellationToken);
+        if (!cosmosisOptions.ThrowIfNotFound)
+            return await RetryAsync(DontThrowOnNotFound, cosmosisOptions, containerPath, cancellationToken);
 
         // We need to know if the document existed to correctly report whether it was deleted successfully
         // in case of a network issue leading to retry.
         bool documentExistedBefore;
-        if (options.AssumeDocumentExists)
+        if (cosmosisOptions.AssumeDocumentExists)
             documentExistedBefore = true;
         else
         {
             try
             {
-                await GetOneAsync<T>(containerPath, documentKey, options, cancellationToken);
+                await GetOneAsync<T>(containerPath, documentKey, cosmosisOptions, cosmosOptions, cancellationToken);
                 documentExistedBefore = true;
             }
             catch (CosmosDocumentNotFoundException)
             {
-                if (options.FakeCosmosExceptionWhenDocumentNotFound)
+                if (cosmosisOptions.FakeCosmosExceptionWhenDocumentNotFound)
                     throw new CosmosDocumentNotFoundException(
                         containerPath,
                         documentKey,
@@ -266,16 +276,17 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
             }
         }
         
-        return await RetryAsync(ThrowOnNotFound, options, containerPath, cancellationToken);
+        return await RetryAsync(ThrowOnNotFound, cosmosisOptions, containerPath, cancellationToken);
         
         async Task<ItemResponse<T>?> DontThrowOnNotFound(RetryContext retryContext)
         {
             try
             {
                 return await container.DeleteItemAsync<T>(
-                    documentKey.CosmosDocumentId.Value, 
-                    documentKey.PartitionKey, 
-                    cancellationToken: retryContext.CancellationToken
+                    documentKey.CosmosDocumentId.Value,
+                    documentKey.PartitionKey,
+                    cosmosOptions,
+                    retryContext.CancellationToken
                 );
             }
             catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -290,9 +301,10 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
             try
             {
                 return await container.DeleteItemAsync<T>(
-                    documentKey.CosmosDocumentId.Value, 
-                    documentKey.PartitionKey, 
-                    cancellationToken: retryContext.CancellationToken
+                    documentKey.CosmosDocumentId.Value,
+                    documentKey.PartitionKey,
+                    cosmosOptions,
+                    retryContext.CancellationToken
                 );
             }
             catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -313,21 +325,23 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
     public async Task<ResponseMessage> DeletePartitionAsync(
         ContainerPath containerPath,
         PartitionKey partitionKey,
-        CosmosisDeletePartitionOptions? options = null,
+        CosmosisDeletePartitionOptions? cosmosisOptions = null,
+        RequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     ) {
-        options ??= new CosmosisDeletePartitionOptions();
+        cosmosisOptions ??= new CosmosisDeletePartitionOptions();
         var container = GetContainer(containerPath);
 
-        return await RetryAsync(FuncAsync, options, containerPath, cancellationToken);
+        return await RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
 
         async Task<ResponseMessage> FuncAsync(RetryContext retryContext)
         {
             try
             {
                 return await container.DeleteAllItemsByPartitionKeyStreamAsync(
-                    partitionKey, 
-                    cancellationToken: retryContext.CancellationToken
+                    partitionKey,
+                    cosmosOptions,
+                    retryContext.CancellationToken
                 );
             }
             catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
