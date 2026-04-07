@@ -5,12 +5,22 @@ using System.Threading.Tasks;
 using BreadTh.Cosmosis.Data.Dto;
 using BreadTh.Cosmosis.Data.Exceptions;
 using BreadTh.Cosmosis.Data.ValueObjects;
+using BreadTh.Cosmosis.Internal;
 using Microsoft.Azure.Cosmos;
 
 namespace BreadTh.Cosmosis;
 
-public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
+internal sealed class CosmosisClient : ICosmosisClient
 {
+    private readonly CosmosClient cosmosClient;
+    private readonly RetryExecutor retryExecutor;
+
+    internal CosmosisClient(CosmosClient cosmosClient, RetryExecutor retryExecutor)
+    {
+        this.cosmosClient = cosmosClient;
+        this.retryExecutor = retryExecutor;
+    }
+
     public async Task<ItemResponse<T>> CreateAsync<T>(
         ContainerPath containerPath,
         CosmosDocumentKey documentKey,
@@ -68,7 +78,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
         else
             funcAsync = FirstCreateThenUpsertAsync;
 
-        return await RetryAsync(funcAsync, cosmosisOptions, containerPath, cancellationToken);
+        return await retryExecutor.RetryAsync(funcAsync, cosmosisOptions, containerPath, cancellationToken);
 
         async Task<ItemResponse<T>> FirstCreateThenUpsertAsync(RetryContext context)
         {
@@ -117,7 +127,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
             );
         }
 
-        return await RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
+        return await retryExecutor.RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
     }
 
     public async Task<ItemResponse<T>> GetOneAsync<T>(
@@ -148,7 +158,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
             }
         }
 
-        return await RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
+        return await retryExecutor.RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
     }
 
     public async Task<ItemResponse<T>> UpdateAsync<T>(
@@ -165,7 +175,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
         var maxETagMismatchRetries = cosmosisOptions.MaxETagMismatchRetries;
         var container = GetContainer(containerPath);
 
-        return await RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
+        return await retryExecutor.RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
 
         async Task<ItemResponse<T>> FuncAsync(RetryContext retryContext)
         {
@@ -242,7 +252,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
         var container = GetContainer(containerPath);
 
         if (!cosmosisOptions.ThrowIfNotFound)
-            return await RetryAsync(DontThrowOnNotFound, cosmosisOptions, containerPath, cancellationToken);
+            return await retryExecutor.RetryAsync(DontThrowOnNotFound, cosmosisOptions, containerPath, cancellationToken);
 
         // We need to know if the document existed to correctly report whether it was deleted successfully
         // in case of a network issue leading to retry.
@@ -276,7 +286,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
             }
         }
         
-        return await RetryAsync(ThrowOnNotFound, cosmosisOptions, containerPath, cancellationToken);
+        return await retryExecutor.RetryAsync(ThrowOnNotFound, cosmosisOptions, containerPath, cancellationToken);
         
         async Task<ItemResponse<T>?> DontThrowOnNotFound(RetryContext retryContext)
         {
@@ -332,7 +342,7 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
         cosmosisOptions ??= new CosmosisDeletePartitionOptions();
         var container = GetContainer(containerPath);
 
-        return await RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
+        return await retryExecutor.RetryAsync(FuncAsync, cosmosisOptions, containerPath, cancellationToken);
 
         async Task<ResponseMessage> FuncAsync(RetryContext retryContext)
         {
@@ -353,76 +363,5 @@ public sealed class CosmosisClient(CosmosClient cosmosClient) : ICosmosisClient
     
     private Container GetContainer(ContainerPath containerPath) =>
         cosmosClient.GetContainer(containerPath.CosmosDatabaseName.Value, containerPath.CosmosContainerName.Value);
-
-    private static bool IsOwnerResourceMissing(CosmosException ex) =>
-        ex.Message.Contains("Owner resource does not exist");
-
-    private async Task<TResult> RetryAsync<TResult>(
-        Func<RetryContext, Task<TResult>> funcAsync,
-        BaseCosmosisOptions options,
-        ContainerPath containerPath,
-        CancellationToken cancellationToken = default
-    ) {
-        var context = new RetryContext { CancellationToken = cancellationToken };
-        CosmosException? lastException = null;
-        for (; context.Attempt < options.MaxTotalRetries; context.Attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                return await funcAsync(context);
-            }
-            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.RequestTimeout)
-            {
-                lastException = ex;
-                context.NetworkFailureCount++;
-                if (context.NetworkFailureCount >= options.MaxNetworkFailureRetries)
-                    throw new CosmosConnectionTimedOutException(ex, context.NetworkFailureCount);
-                await BackoffAsync(context.BackoffCount++, options, cancellationToken);
-            }
-            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
-            {
-                lastException = ex;
-                context.ThrottleCount++;
-                if (context.ThrottleCount >= options.MaxThrottleRetries)
-                    throw new CosmosTooManyRequestsException(context.ThrottleCount, ex);
-                await BackoffAsync(context.BackoffCount++, options, cancellationToken);
-            }
-            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.ServiceUnavailable)
-            {
-                lastException = ex;
-                context.ServiceUnavailableCount++;
-                if (context.ServiceUnavailableCount >= options.MaxServiceUnavailableRetries)
-                    throw new CosmosServiceUnavailableException(ex, context.ServiceUnavailableCount);
-                await BackoffAsync(context.BackoffCount++, options, cancellationToken);
-            }
-            catch (CosmosException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            {
-                throw new CosmosAuthenticationFailedException(ex);
-            }
-            catch (CosmosException ex) when (ex is { StatusCode: HttpStatusCode.NotFound, SubStatusCode: 1003 })
-            {
-                throw new CosmosContainerNotFoundException(containerPath, ex);
-            }
-            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound && IsOwnerResourceMissing(ex))
-            {
-                throw new CosmosDatabaseNotFoundException(containerPath.CosmosDatabaseName, ex);
-            }
-        }
-
-        throw lastException!;
-    }
-
-    private static async Task BackoffAsync(
-        int attempt, 
-        BaseCosmosisOptions options, 
-        CancellationToken cancellationToken = default
-    ) {
-        var backoff = options.RetryBackoff;
-        if (backoff is null or { Length: 0 })
-            return;
-        var delay = backoff[Math.Min(attempt, backoff.Length - 1)];
-        await Task.Delay(delay, cancellationToken);
-    }
 
 }
