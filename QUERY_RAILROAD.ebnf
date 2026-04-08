@@ -1,0 +1,7 @@
+query = { "Where" } , ( early_distinct | no_early_distinct ) , tail ;
+
+early_distinct = "Distinct" , { "Where" } , [ ( "OrderBy" | "OrderByDescending" ) , { ( "ThenBy" | "ThenByDescending" ) } , { "Where" } ] ;
+
+no_early_distinct = [ ( "OrderBy" | "OrderByDescending" ) , { ( "ThenBy" | "ThenByDescending" ) } , { "Where" } , [ "Distinct" , { "Where" } ] ] ;
+
+tail = [ "Skip" ] , [ "Take" ] , [ "Select" | "SelectMany" ] , ( "ToListAsync" | "ToAsyncEnumerable" | "ToPageAsync" | "CountAsync" | "AnyAsync" | "First[OrDefault]Async" | "Single[OrDefault]Async" | "SumAsync" | "AverageAsync" | "Min/MaxAsync" ) ;
