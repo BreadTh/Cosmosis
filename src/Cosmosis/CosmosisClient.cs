@@ -6,6 +6,7 @@ using BreadTh.Cosmosis.Data.Dto;
 using BreadTh.Cosmosis.Data.Exceptions;
 using BreadTh.Cosmosis.Data.ValueObjects;
 using BreadTh.Cosmosis.Internal;
+using BreadTh.Cosmosis.Query;
 using Microsoft.Azure.Cosmos;
 
 namespace BreadTh.Cosmosis;
@@ -361,7 +362,30 @@ internal sealed class CosmosisClient : ICosmosisClient
         }
     }
     
+    public ICosmosisQueryEntry<T> Query<T>(
+        ContainerPath containerPath,
+        CosmosisQueryOptions? cosmosisOptions = null,
+        QueryRequestOptions? cosmosOptions = null
+    ) where T : notnull
+    {
+        cosmosisOptions ??= new CosmosisQueryOptions();
+        var container = GetContainer(containerPath);
+        var queryable = container.GetItemLinqQueryable<T>(requestOptions: cosmosOptions);
+        return new CosmosisQuery<T>(queryable, cosmosisOptions, containerPath, retryExecutor, container);
+    }
+    
+    public IUnprotectedCosmosisQuery<T> UnprotectedQuery<T>(
+        ContainerPath containerPath,
+        CosmosisQueryOptions? cosmosisOptions = null,
+        QueryRequestOptions? cosmosOptions = null
+    ) where T : notnull
+    {
+        cosmosisOptions ??= new CosmosisQueryOptions();
+        var container = GetContainer(containerPath);
+        var queryable = container.GetItemLinqQueryable<T>(requestOptions: cosmosOptions);
+        return new CosmosisQuery<T>(queryable, cosmosisOptions, containerPath, retryExecutor, container);
+    }
+
     private Container GetContainer(ContainerPath containerPath) =>
         cosmosClient.GetContainer(containerPath.CosmosDatabaseName.Value, containerPath.CosmosContainerName.Value);
-
 }

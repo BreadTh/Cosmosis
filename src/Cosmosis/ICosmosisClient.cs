@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using BreadTh.Cosmosis.Data.Dto;
 using BreadTh.Cosmosis.Data.Exceptions;
 using BreadTh.Cosmosis.Data.ValueObjects;
+using BreadTh.Cosmosis.Query;
 using Microsoft.Azure.Cosmos;
 
 namespace BreadTh.Cosmosis;
@@ -19,7 +20,7 @@ public interface ICosmosisClient
     /// while also guaranteeing that it won't throw DocumentAlreadyExists on a write-retry if a network failure happened
     /// during the first write, and the document was received by Cosmos but the OK-respond didn't make it back to the
     /// client. Cosmos does not have an idempotency parameter for creation.
-    /// If overwrite isn't an issue, consider using the much simpler .UpsertAsync
+    /// If overwrite isn't an issue, consider using the much simpler .UpsertAsync instead.
     /// May throw:
     /// <see cref="CosmosAuthenticationFailedException"/>,
     /// <see cref="CosmosDatabaseNotFoundException"/>,
@@ -149,4 +150,24 @@ public interface ICosmosisClient
         RequestOptions? cosmosOptions = null,
         CancellationToken cancellationToken = default
     );
+
+    /// <summary>
+    /// Creates a constrained query builder that only exposes LINQ operations Cosmos DB can translate
+    /// into server-side queries, avoiding runtime errors from unsupported LINQ operations.
+    /// </summary>
+    ICosmosisQueryEntry<T> Query<T>(
+        ContainerPath containerPath,
+        CosmosisQueryOptions? cosmosisOptions = null,
+        QueryRequestOptions? cosmosOptions = null
+    ) where T : notnull;
+
+    [Obsolete(
+        "UnprotectedQuery exposes all operations without compile-time safety. " +
+        "Prefer .Query<T> unless you need to test or bypass operation ordering constraints."
+    )]
+    IUnprotectedCosmosisQuery<T> UnprotectedQuery<T>(
+        ContainerPath containerPath,
+        CosmosisQueryOptions? cosmosisOptions = null,
+        QueryRequestOptions? cosmosOptions = null
+    ) where T : notnull;
 }
